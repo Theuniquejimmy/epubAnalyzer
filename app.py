@@ -6,22 +6,29 @@ from openai import OpenAI
 import tempfile
 import os
 import re
+import json
 
 # --- Configuration ---
 st.set_page_config(page_title="NVIDIA AI Book Reader", layout="wide", page_icon="📗")
 
-# --- Persistence Logic ---
-KEY_FILE = ".env"
+# --- Persistence Logic (JSON) ---
+CONFIG_FILE = "config.json"
 
-def load_key():
-    if os.path.exists(KEY_FILE):
-        with open(KEY_FILE, "r") as f:
-            return f.read().strip()
-    return ""
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                return json.load(f)
+        except:
+            pass
+    return {"api_key": "", "wpm": 250}
 
-def save_key(key):
-    with open(KEY_FILE, "w") as f:
-        f.write(key)
+def save_config(api_key, wpm):
+    config = {"api_key": api_key, "wpm": wpm}
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(config, f)
+
+user_config = load_config()
 
 # --- Custom Styling ---
 def apply_custom_style():
@@ -29,16 +36,18 @@ def apply_custom_style():
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Merriweather:wght@300;400;700;900&display=swap');
         html, body, [class*="css"] { font-family: 'Merriweather', serif; }
-        .streamlit-expanderHeader { font-size: 1.2rem; font-weight: 700; color: #FAFAFA; background-color: #2D2D2D; border-radius: 8px; }
+        .streamlit-expanderHeader { font-size: 1.1rem; font-weight: 700; color: #FAFAFA; background-color: #2D2D2D; border-radius: 8px; }
         
         .summary-box { 
             background-color: #2D2D2D; 
-            padding: 20px; 
+            padding: 30px; 
             border-radius: 8px; 
             border: 1px solid #76b900; 
             margin-bottom: 20px; 
             box-shadow: 0 4px 6px rgba(0,0,0,0.3); 
-            line-height: 1.6; 
+            line-height: 1.8; 
+            font-size: 1.1rem;
+            color: #E0E0E0;
         }
 
         /* Target HTML <b> tags for bolding */
@@ -60,34 +69,15 @@ def clean_html(html_content):
     return soup.get_text()
 
 def extract_title(soup, filename):
-    """
-    Smart Title Extractor:
-    1. Looks for H1/H2 tags.
-    2. Looks for elements with class='title' or 'chapter'.
-    3. Fallback: Uses the first short line of text.
-    """
-    # 1. Standard Header Search
     header = soup.find(['h1', 'h2', 'h3'])
-    if header:
-        return header.get_text().strip()[:60]
-    
-    # 2. Class-based Search (e.g. <p class="chapter-title">)
+    if header: return header.get_text().strip()[:60]
     for tag in soup.find_all(True, class_=re.compile(r'(title|chapter|head)', re.I)):
         text = tag.get_text().strip()
-        if 3 < len(text) < 60: # Valid title length
-            return text
-
-    # 3. First Line Heuristic (Grab first significant line)
+        if 3 < len(text) < 60: return text
     text_content = soup.get_text().strip()
     if text_content:
         lines = [line.strip() for line in text_content.split('\n') if line.strip()]
-        if lines:
-            first_line = lines[0]
-            # If the first line is short (like "Chapter 1"), assume it's the title
-            if len(first_line) < 50:
-                return first_line
-
-    # 4. Fallback to clean filename
+        if lines and len(lines[0]) < 50: return lines[0]
     return f"Section ({filename.split('/')[-1]})"
 
 def parse_epub(uploaded_file):
@@ -102,14 +92,10 @@ def parse_epub(uploaded_file):
 
         for item in book.get_items():
             if item.get_type() == ebooklib.ITEM_DOCUMENT:
-                if junk_pattern.search(item.get_name()):
-                    continue
-                
+                if junk_pattern.search(item.get_name()): continue
                 soup = BeautifulSoup(item.get_content(), 'html.parser')
                 text = soup.get_text()
                 word_count = len(text.split())
-
-                # Strict Length Filter
                 if word_count > 300:
                     real_title = extract_title(soup, item.get_name())
                     chapters.append({'title': real_title, 'content': text, 'words': word_count})
@@ -118,8 +104,7 @@ def parse_epub(uploaded_file):
         st.error(f"Error parsing EPUB: {e}")
         return []
     finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+        if os.path.exists(tmp_path): os.remove(tmp_path)
 
 def calculate_time(word_count, wpm):
     minutes = word_count / wpm
@@ -127,28 +112,38 @@ def calculate_time(word_count, wpm):
     mins = int(minutes % 60)
     return f"{hours}h {mins}m" if hours > 0 else f"{mins}m"
 
-def summarize_text(text, api_key):
+def summarize_batch(text, api_key, title_list):
     try:
         client = OpenAI(
             base_url="https://integrate.api.nvidia.com/v1",
             api_key=api_key
         )
         
-        # PROMPT: Use HTML tags for bolding
+        # --- PLOT-FOCUSED + BOLDING PROMPT ---
         prompt = f"""
-        Summarize this book excerpt.
-        CRITICAL INSTRUCTION: Do NOT use Markdown asterisks (**). 
-        Instead, use HTML <b> tags (e.g. <b>Name</b>) for <b>Characters</b>, <b>Locations</b>, and <b>Themes</b>.
+        You are a plot summarizer. Read the following text (covering chapters: {', '.join(title_list)}).
         
-        TEXT: {text[:40000]} 
+        INSTRUCTIONS:
+        1. Write a chronological summary of the **PLOT EVENTS**. (Step 1 -> Step 2 -> Step 3).
+        2. Keep language simple and direct. Do not write a review.
+        3. **FORMATTING RULE:** You MUST use HTML <b> tags to bold the following EVERY TIME they appear:
+           - <b>Character Names</b> (e.g. <b>Harry</b>, <b>Hermione</b>)
+           - <b>Specific Locations</b> (e.g. <b>Hogwarts</b>)
+           - <b>Key Themes</b> (e.g. <b>Betrayal</b>)
+        
+        TEXT CONTENT:
+        {text[:150000]} 
         """
         
         completion = client.chat.completions.create(
             model="meta/llama-3.1-70b-instruct",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.5,
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that summarizes stories chronologically and bolds names."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3, # Low temp = factual, focused on the instructions
             top_p=1,
-            max_tokens=1024,
+            max_tokens=2048,
             stream=False
         )
         return completion.choices[0].message.content
@@ -158,26 +153,35 @@ def summarize_text(text, api_key):
 # --- Main App Interface ---
 
 st.title("📗 NVIDIA AI Book Reader")
-st.caption("Powered by NVIDIA NIM (Llama 3.1 70B)")
+st.caption("Context-Aware Analysis (Llama 3.1 70B)")
 
-# --- Settings ---
-with st.expander("⚙️ Settings & API Key", expanded=True):
+# --- Settings (Collapsed by default) ---
+with st.expander("⚙️ Settings & API Key", expanded=False):
     col1, col2 = st.columns([2, 1])
+    
     with col1:
-        saved_key = load_key()
-        api_key_input = st.text_input("NVIDIA API Key", value=saved_key, type="password", placeholder="nvapi-...")
+        api_key_input = st.text_input(
+            "NVIDIA API Key", 
+            value=user_config.get("api_key", ""), 
+            type="password", 
+            placeholder="nvapi-..."
+        )
         st.markdown("Get 1,000 free credits at [build.nvidia.com](https://build.nvidia.com/explore/discover)")
-        
-        save_choice = st.checkbox("Remember my API Key", value=bool(saved_key))
-        if save_choice and api_key_input:
-            if api_key_input != saved_key:
-                save_key(api_key_input)
-                st.toast("Key saved!", icon="💾")
-        elif not save_choice and os.path.exists(KEY_FILE):
-            os.remove(KEY_FILE)
             
     with col2:
-        wpm = st.number_input("Reading Speed (WPM)", 50, 1000, 250, 10)
+        wpm_input = st.number_input(
+            "Reading Speed (WPM)", 
+            min_value=50, 
+            max_value=1000, 
+            value=int(user_config.get("wpm", 250)), 
+            step=10
+        )
+    
+    if st.button("Save Settings"):
+        save_config(api_key_input, wpm_input)
+        st.success("Settings saved!", icon="💾")
+        user_config["api_key"] = api_key_input
+        user_config["wpm"] = wpm_input
 
 st.divider()
 
@@ -185,8 +189,8 @@ st.divider()
 uploaded_file = st.file_uploader("Drop EPUB file here", type=["epub"])
 
 if uploaded_file:
-    if "summaries" not in st.session_state:
-        st.session_state.summaries = {}
+    if "analysis_result" not in st.session_state:
+        st.session_state.analysis_result = None
         
     with st.spinner("Analyzing book structure..."):
         chapters = parse_epub(uploaded_file)
@@ -196,57 +200,56 @@ if uploaded_file:
         m1, m2, m3 = st.columns(3)
         m1.metric("Real Chapters", len(chapters))
         m2.metric("Total Words", f"{total_words:,}")
-        m3.metric("Est. Time", calculate_time(total_words, wpm))
+        
+        current_wpm = wpm_input if wpm_input else 250
+        m3.metric("Est. Time", calculate_time(total_words, current_wpm))
         
         st.write("---")
         
-        st.subheader("Select Chapters")
+        st.subheader("Select Scope")
         
-        # Mapping titles for slider
         chapter_map = {i: ch['title'] for i, ch in enumerate(chapters)}
-        
         start_idx, end_idx = st.select_slider(
-            "Select Range:",
+            "Select Range to Analyze as One Block:",
             options=range(len(chapters)),
-            value=(0, min(2, len(chapters)-1)), 
+            value=(0, min(4, len(chapters)-1)), 
             format_func=lambda x: chapter_map[x]
         )
         
         selected_chapters = chapters[start_idx : end_idx + 1]
         
-        if st.button("Generate Summaries", type="primary", use_container_width=True):
-            if not api_key_input:
+        batch_words = sum(ch['words'] for ch in selected_chapters)
+        batch_titles = [ch['title'] for ch in selected_chapters]
+        
+        st.info(f"Selected **{len(selected_chapters)} chapters** ({batch_words:,} words). The AI will read this as a single continuous story.")
+        
+        if st.button("Generate Plot Summary", type="primary", use_container_width=True):
+            key_to_use = api_key_input
+            
+            if not key_to_use:
                 st.error("Please enter NVIDIA API Key in settings.")
             else:
-                progress_bar = st.progress(0)
-                status = st.empty()
+                st.session_state.analysis_result = None 
                 
-                for i, chapter in enumerate(selected_chapters):
-                    idx = start_idx + i
-                    status.text(f"Processing: {chapter['title']}...")
-                    summary = summarize_text(chapter['content'], api_key_input)
-                    st.session_state.summaries[idx] = summary
-                    progress_bar.progress((i + 1) / len(selected_chapters))
+                combined_text = "\n\n".join([ch['content'] for ch in selected_chapters])
                 
-                status.empty()
-                st.rerun()
+                with st.spinner(f"Reading {len(selected_chapters)} chapters and extracting plot points..."):
+                    summary = summarize_batch(combined_text, key_to_use, batch_titles)
+                    st.session_state.analysis_result = {
+                        "range": f"{batch_titles[0]} - {batch_titles[-1]}",
+                        "text": summary
+                    }
 
-        if st.session_state.summaries:
+        # Display Result
+        if st.session_state.analysis_result:
             st.write("---")
-            st.subheader("Analysis Results")
-            full_text_export = f"Analysis for {uploaded_file.name}\n\n"
-            
-            for idx, text in st.session_state.summaries.items():
-                title = chapters[idx]['title']
-                st.markdown(f"### {title}")
-                # Render HTML safely
-                st.markdown(f'<div class="summary-box">{text}</div>', unsafe_allow_html=True)
-                full_text_export += f"--- {title} ---\n{text}\n\n"
+            st.subheader(f"Plot Summary: {st.session_state.analysis_result['range']}")
+            st.markdown(f'<div class="summary-box">{st.session_state.analysis_result["text"]}</div>', unsafe_allow_html=True)
             
             st.download_button(
-                label="Download Summaries (.txt)",
-                data=full_text_export,
-                file_name=f"{uploaded_file.name}_summary.txt",
+                label="Download Analysis (.txt)",
+                data=st.session_state.analysis_result["text"],
+                file_name=f"analysis_summary.txt",
                 mime="text/plain",
                 type="primary"
             )
