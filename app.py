@@ -11,7 +11,7 @@ import json
 # --- Configuration ---
 st.set_page_config(page_title="NVIDIA AI Book Reader", layout="wide", page_icon="📗")
 
-# --- Persistence Logic (JSON) ---
+# --- Persistence Logic ---
 CONFIG_FILE = "config.json"
 
 def load_config():
@@ -42,18 +42,18 @@ def apply_custom_style():
             background-color: #2D2D2D; 
             padding: 30px; 
             border-radius: 8px; 
-            border: 1px solid #76b900; 
+            border: 1px solid #555; 
             margin-bottom: 20px; 
             box-shadow: 0 4px 6px rgba(0,0,0,0.3); 
-            line-height: 1.8; 
-            font-size: 1.1rem;
+            line-height: 1.9; 
+            font-size: 1.15rem; 
             color: #E0E0E0;
         }
 
-        /* Target HTML <b> tags for bolding */
+        /* NEUTRALIZE BOLDING */
         b, strong { 
-            color: #76b900 !important; 
-            font-weight: 700; 
+            font-weight: normal;
+            color: inherit; 
         }
         
         h1, h2, h3 { font-weight: 900 !important; letter-spacing: -0.5px; }
@@ -119,17 +119,18 @@ def summarize_batch(text, api_key, title_list):
             api_key=api_key
         )
         
-        # --- PLOT-FOCUSED + BOLDING PROMPT ---
+        # --- PLOT X-RAY PROMPT (Relaxed Core Conflict Constraint) ---
         prompt = f"""
-        You are a plot summarizer. Read the following text (covering chapters: {', '.join(title_list)}).
+        You are a reading assistant for a beginner reader. 
+        Perform a "Plot X-Ray" on the following text (covering chapters: {', '.join(title_list)}).
         
         INSTRUCTIONS:
-        1. Write a chronological summary of the **PLOT EVENTS**. (Step 1 -> Step 2 -> Step 3).
-        2. Keep language simple and direct. Do not write a review.
-        3. **FORMATTING RULE:** You MUST use HTML <b> tags to bold the following EVERY TIME they appear:
-           - <b>Character Names</b> (e.g. <b>Harry</b>, <b>Hermione</b>)
-           - <b>Specific Locations</b> (e.g. <b>Hogwarts</b>)
-           - <b>Key Themes</b> (e.g. <b>Betrayal</b>)
+        1. **Language:** Use simple, plain English. No complex words.
+        2. **Format:** Output the answer in this exact structure:
+           - **The Core Conflict:** A concise explanation (2-3 sentences) of the main problem or goal driving this section.
+           - **Who is here?:** A simple list of the characters involved.
+           - **What Happens (Step-by-Step):** A chronological list of events.
+        3. **Distraction Free:** Do NOT use bolding, italics, or special text formatting. Just plain text.
         
         TEXT CONTENT:
         {text[:150000]} 
@@ -138,10 +139,10 @@ def summarize_batch(text, api_key, title_list):
         completion = client.chat.completions.create(
             model="meta/llama-3.1-70b-instruct",
             messages=[
-                {"role": "system", "content": "You are a helpful assistant that summarizes stories chronologically and bolds names."},
+                {"role": "system", "content": "You are a helpful reading assistant for a beginner."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.3, # Low temp = factual, focused on the instructions
+            temperature=0.3, 
             top_p=1,
             max_tokens=2048,
             stream=False
@@ -153,9 +154,9 @@ def summarize_batch(text, api_key, title_list):
 # --- Main App Interface ---
 
 st.title("📗 NVIDIA AI Book Reader")
-st.caption("Context-Aware Analysis (Llama 3.1 70B)")
+st.caption("Plot X-Ray (Beginner Friendly)")
 
-# --- Settings (Collapsed by default) ---
+# --- Settings ---
 with st.expander("⚙️ Settings & API Key", expanded=False):
     col1, col2 = st.columns([2, 1])
     
@@ -221,9 +222,9 @@ if uploaded_file:
         batch_words = sum(ch['words'] for ch in selected_chapters)
         batch_titles = [ch['title'] for ch in selected_chapters]
         
-        st.info(f"Selected **{len(selected_chapters)} chapters** ({batch_words:,} words). The AI will read this as a single continuous story.")
+        st.info(f"Selected **{len(selected_chapters)} chapters** ({batch_words:,} words).")
         
-        if st.button("Generate Plot Summary", type="primary", use_container_width=True):
+        if st.button("Generate Plot X-Ray", type="primary", use_container_width=True):
             key_to_use = api_key_input
             
             if not key_to_use:
@@ -233,7 +234,7 @@ if uploaded_file:
                 
                 combined_text = "\n\n".join([ch['content'] for ch in selected_chapters])
                 
-                with st.spinner(f"Reading {len(selected_chapters)} chapters and extracting plot points..."):
+                with st.spinner(f"Reading {len(selected_chapters)} chapters..."):
                     summary = summarize_batch(combined_text, key_to_use, batch_titles)
                     st.session_state.analysis_result = {
                         "range": f"{batch_titles[0]} - {batch_titles[-1]}",
@@ -243,11 +244,11 @@ if uploaded_file:
         # Display Result
         if st.session_state.analysis_result:
             st.write("---")
-            st.subheader(f"Plot Summary: {st.session_state.analysis_result['range']}")
+            st.subheader(f"X-Ray: {st.session_state.analysis_result['range']}")
             st.markdown(f'<div class="summary-box">{st.session_state.analysis_result["text"]}</div>', unsafe_allow_html=True)
             
             st.download_button(
-                label="Download Analysis (.txt)",
+                label="Download X-Ray (.txt)",
                 data=st.session_state.analysis_result["text"],
                 file_name=f"analysis_summary.txt",
                 mime="text/plain",
