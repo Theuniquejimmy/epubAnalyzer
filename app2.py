@@ -39,22 +39,11 @@ def apply_custom_style():
         html, body, [class*="css"] { font-family: 'Merriweather', serif; }
         .streamlit-expanderHeader { font-size: 1.1rem; font-weight: 700; color: #FAFAFA; background-color: #2D2D2D; border-radius: 8px; }
         
-        /* Box Styling for the Result Container */
-        .element-container {
-            margin-bottom: 1rem;
-        }
-
-        /* TEXT COLORS */
+        .element-container { margin-bottom: 1rem; }
         b, strong { color: #76b900 !important; font-weight: 700; }
         em, i { color: #A0C0FF; font-style: italic; }
         u { text-decoration-color: #76b900; text-decoration-thickness: 2px; }
-        
-        /* HEADERS - Make them GREEN as requested */
-        h1, h2, h3 { 
-            font-weight: 900 !important; 
-            letter-spacing: -0.5px;
-            color: #76b900 !important; 
-        }
+        h1, h2, h3 { font-weight: 900 !important; letter-spacing: -0.5px; color: #76b900 !important; }
         
         .preview-text {
             font-family: 'Courier New', monospace;
@@ -78,10 +67,52 @@ def clean_html(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
     return soup.get_text()
 
-def extract_title(soup, filename):
-    header = soup.find(['h1', 'h2', 'h3'])
-    if header: return header.get_text().strip()[:60]
-    return f"Section"
+def extract_title_candidate(soup):
+    """
+    Attempts to extract a valid title string from the soup.
+    Returns the string if found, otherwise None.
+    """
+    # 1. Look for standard headers (H1-H4)
+    header = soup.find(['h1', 'h2', 'h3', 'h4'])
+    if header: 
+        text = header.get_text().strip()
+        if len(text) < 100: return text
+
+    # 2. Look for special class names (often used in ebooks)
+    for tag in soup.find_all(True, class_=re.compile(r'(chapter|title|head)', re.I)):
+        text = tag.get_text().strip()
+        if 2 < len(text) < 80: return text
+        
+    # 3. Analyze text content for specific Keywords
+    # This covers "Chapter 1", "One", "Part One", "Prologue", etc.
+    text_content = soup.get_text().strip()
+    if text_content:
+        lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+        if lines:
+            first = lines[0]
+            # Regex Explanation:
+            # ^(chapter|part|book|prologue...): Standard headings
+            # |(one|two...twenty): Spelled out numbers
+            # |([IVXLCDM]+): Roman Numerals
+            # |(\d+): Digits
+            keywords = r'^(chapter|part|book|prologue|epilogue|preface|introduction|contents|appendix|dedication|acknowledgments|about|title|cover)'
+            spelled_nums = r'^(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)$'
+            
+            if len(first) < 50:
+                # Check for standard keywords
+                if re.match(keywords, first, re.IGNORECASE):
+                    return first
+                # Check for "Part One", "Part 1"
+                if re.match(r'^part\s+(\w+|\d+)', first, re.IGNORECASE):
+                    return first
+                # Check for spelled out numbers "One"
+                if re.match(spelled_nums, first, re.IGNORECASE):
+                    return first
+                # Check for Roman Numerals or Digits alone
+                if re.match(r'^(\d+|[IVXLCDM]+)$', first, re.IGNORECASE):
+                    return first
+
+    return None
 
 def get_metadata(book):
     try: title = book.get_metadata('DC', 'title')[0][0]
@@ -123,7 +154,7 @@ def parse_epub_to_pages(uploaded_file):
 
         all_pages = []
         chapter_map = [] 
-        junk_pattern = re.compile(r'(cover|copyright|dedication|ack)', re.IGNORECASE)
+        junk_pattern = re.compile(r'(cover)', re.IGNORECASE)
 
         for item in book.get_items():
             if item.get_type() == ebooklib.ITEM_DOCUMENT:
@@ -134,8 +165,21 @@ def parse_epub_to_pages(uploaded_file):
                 
                 if len(raw_text) < 200: continue 
                 
-                chapter_title = extract_title(soup, item.get_name())
+                # Try to find a real title
+                candidate_title = extract_title_candidate(soup)
                 
+                # Logic: If we found a title, use it.
+                # If NOT, check if we should label it "Segment X"
+                if candidate_title:
+                    chapter_title = candidate_title
+                else:
+                    # Use the place on the list (Current Length + 1)
+                    # Note: We only generate a NEW segment title if we are about to create a new entry
+                    # Since we append to chapter_map based on change, we essentially force a change here.
+                    next_num = len(chapter_map) + 1
+                    chapter_title = f"Segment {next_num}"
+                
+                # Check if this starts a new section in our map
                 if not all_pages or all_pages[-1]['chapter'] != chapter_title:
                     current_page_idx = len(all_pages) + 1
                     chapter_map.append({"title": chapter_title, "start_page": current_page_idx})
@@ -222,7 +266,6 @@ def summarize_segmented(selected_pages, api_key, book_title, book_author, progre
                 ],
                 temperature=0.5, top_p=1, max_tokens=1024, stream=False
             )
-            # Python adds the Header. AI provides the text.
             full_summary += f"### {chap_title}\n{completion.choices[0].message.content}\n\n"
         except Exception as e:
             full_summary += f"### {chap_title}\n[Error: {str(e)}]\n\n"
@@ -405,6 +448,5 @@ if uploaded_file:
         if st.session_state.analysis_result:
             st.write("---")
             st.subheader(f"Result: {st.session_state.analysis_result['type']}")
-            # Use a bordered container + native markdown to ensure formatting works perfectly
             with st.container(border=True):
                 st.markdown(st.session_state.analysis_result["text"])
