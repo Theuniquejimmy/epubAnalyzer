@@ -39,22 +39,22 @@ def apply_custom_style():
         html, body, [class*="css"] { font-family: 'Merriweather', serif; }
         .streamlit-expanderHeader { font-size: 1.1rem; font-weight: 700; color: #FAFAFA; background-color: #2D2D2D; border-radius: 8px; }
         
-        .summary-box { 
-            background-color: #2D2D2D; 
-            padding: 30px; 
-            border-radius: 8px; 
-            border: 1px solid #76b900; 
-            margin-bottom: 20px; 
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3); 
-            line-height: 1.8; 
-            font-size: 1.1rem;
-            color: #E0E0E0;
+        /* Box Styling for the Result Container */
+        .element-container {
+            margin-bottom: 1rem;
         }
 
+        /* TEXT COLORS */
         b, strong { color: #76b900 !important; font-weight: 700; }
         em, i { color: #A0C0FF; font-style: italic; }
         u { text-decoration-color: #76b900; text-decoration-thickness: 2px; }
-        h1, h2, h3 { font-weight: 900 !important; letter-spacing: -0.5px; }
+        
+        /* HEADERS - Make them GREEN as requested */
+        h1, h2, h3 { 
+            font-weight: 900 !important; 
+            letter-spacing: -0.5px;
+            color: #76b900 !important; 
+        }
         
         .preview-text {
             font-family: 'Courier New', monospace;
@@ -204,6 +204,7 @@ def summarize_segmented(selected_pages, api_key, book_title, book_author, progre
         
         INSTRUCTIONS:
         - Briefly summarize the contents of this specific chapter using rich text formatting.
+        - **IMPORTANT: Do NOT output the chapter title as a header.** Start directly with the summary text.
         - NO SPOILERS. Only consider this content.
         - Match the tone and energy of the book (funny, dark, exciting fantasy, etc.).
         - Use **Bolding** for names/locations and *Italics* for major plot points.
@@ -221,6 +222,7 @@ def summarize_segmented(selected_pages, api_key, book_title, book_author, progre
                 ],
                 temperature=0.5, top_p=1, max_tokens=1024, stream=False
             )
+            # Python adds the Header. AI provides the text.
             full_summary += f"### {chap_title}\n{completion.choices[0].message.content}\n\n"
         except Exception as e:
             full_summary += f"### {chap_title}\n[Error: {str(e)}]\n\n"
@@ -250,6 +252,7 @@ def xray_segmented(selected_pages, api_key, book_title, book_author, progress):
         2. Use `*` (bullets) for lists.
         3. Use `**` (bold) for names.
         4. Use `_` and `<u>` combined for relationships.
+        5. **Do NOT repeat the Chapter Title.**
         
         REQUIRED STRUCTURE:
         
@@ -402,4 +405,6 @@ if uploaded_file:
         if st.session_state.analysis_result:
             st.write("---")
             st.subheader(f"Result: {st.session_state.analysis_result['type']}")
-            st.markdown(f'<div class="summary-box">{st.session_state.analysis_result["text"]}</div>', unsafe_allow_html=True)
+            # Use a bordered container + native markdown to ensure formatting works perfectly
+            with st.container(border=True):
+                st.markdown(st.session_state.analysis_result["text"])
